@@ -1,0 +1,5 @@
+{
+  "ckpt": "./models/mt5-large-19-text2sql (proposed)/checkpoint-43750/",
+  "EM": 0.2746615087040619,
+  "EXEC": 0.33945841392649906
+}
