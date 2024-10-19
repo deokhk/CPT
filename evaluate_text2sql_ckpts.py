@@ -37,14 +37,6 @@ def parse_option():
     parser.add_argument('--db_path', type = str, default = "./data/spider/database",
                         help = 'file path of database.')
     
-    parser.add_argument('--cross_dev_filepath', type=str, default="./data/preprocessed_data/dev_cspider_seq2seq.json", 
-                        help= 'file path of cross eval dev set.')
-    parser.add_argument('--cross_original_dev_filepath', type=str, default="./data/Cspider/dev.json",
-                        help= 'file path of the original cross eval dev set (for registing evaluator).')
-    parser.add_argument('--cross_db_path', type = str, default = "./data/spider/database",
-                        help = 'file path of database for cross-lingual eval set.')
-    parser.add_argument('--cross_eval_dataset_name', type=str, default="Cspider",
-                        help="Name of cross-lingual eval dataset")
 
     parser.add_argument('--num_beams', type = int, default = 8,
                         help = 'beam size in model.generate() function.')
@@ -52,7 +44,6 @@ def parse_option():
                         help = 'the number of returned sequences in model.generate() function (num_return_sequences <= num_beams).')
     parser.add_argument("--output", type = str, default = "predicted_sql.txt")
     
-    parser.add_argument("--cross_eval_every_epoch", action="store_true", help="Enable for cross evaluation every epoch")
 
     parser.add_argument("--exp_name", type=str, default=None, help="Experiment name for wandb logging")
     parser.add_argument("--wandb_log", action="store_true", help="Enable for logging to wandb")
@@ -85,7 +76,6 @@ if __name__ == "__main__":
     spider_db_path = opt.db_path 
 
     eval_results = []
-    cross_eval_results = []
     for ckpt_name in ckpt_names:
         # if the current ckpt is being evaluated or has already been evaluated
         if "{}.txt".format(ckpt_name) in os.listdir(opt.eval_results_path):
@@ -124,35 +114,10 @@ if __name__ == "__main__":
             eval_results.append(eval_result)
             logger.info(eval_results)
 
-            if opt.wandb_log and not opt.cross_eval_every_epoch:
+            if opt.wandb_log:
                 step = int(eval(ckpt_name.split("-")[1]))
                 wandb.log({"EM": eval_result["EM"], "EXEC":eval_result["EXEC"], "STEP": step}, step)
 
-            if opt.cross_eval_every_epoch:
-                logger.info(f"Start testing ckpt on {opt.cross_eval_dataset_name}")
-                with open(opt.eval_results_path+f"/{ckpt_name}_{opt.cross_eval_dataset_name}.txt", "w") as cf:
-                    cf.write("Evaluating...")
-                    
-                    # Override the dev_filepath and original_dev_filepath
-                    opt.dev_filepath = opt.cross_dev_filepath
-                    opt.original_dev_filepath = opt.cross_original_dev_filepath
-                    opt.db_path = opt.cross_db_path
-                    cross_em, cross_exec = _test(opt)
-
-
-                    cross_eval_result = dict()
-                    cross_eval_result["ckpt"] = opt.save_path
-                    cross_eval_result["EM"] = cross_em
-                    cross_eval_result["EXEC"] = cross_exec
-
-                    if opt.wandb_log:
-                        step = int(eval(ckpt_name.split("-")[1]))
-                    
-                    logger.info(cross_eval_result)
-
-                    cf.write(json.dumps(cross_eval_result, indent = 2, ensure_ascii = False))
-                wandb.log({"EM": eval_result["EM"], "EXEC":eval_result["EXEC"], f"{opt.cross_eval_dataset_name}_EM": cross_eval_result["EM"], f"{opt.cross_eval_dataset_name}_EXEC":cross_eval_result["EXEC"]}, step)
-                cross_eval_results.append(cross_eval_result)
 
     for eval_result in eval_results:
         print("ckpt name:", eval_result["ckpt"])
@@ -160,12 +125,6 @@ if __name__ == "__main__":
         print("EXEC:", eval_result["EXEC"])
         print("-----------")
     
-    if opt.cross_eval_every_epoch:
-        for cross_eval_result in cross_eval_results:
-            print("ckpt name:", cross_eval_result["ckpt"])
-            print("EM:", cross_eval_result["EM"])
-            print("EXEC:", cross_eval_result["EXEC"])
-            print("-----------")
     
 
     em_list = [er["EM"] for er in eval_results]
@@ -203,66 +162,18 @@ if __name__ == "__main__":
     print("Best EXEC ckpt:", eval_results[best_exec_idx])
     print("Best EM+EXEC ckpt:", eval_results[best_em_plus_exec_idx])
 
-    if opt.cross_eval_every_epoch:
-        # Find best EM ckpt on cross-lingual dev set
-        cross_best_em_exec = 0
-        cross_best_em_exec_idx = 0
-
-        for idx, cross_eval_result in enumerate(cross_eval_results):
-            if cross_eval_result["EM"] + cross_eval_result["EXEC"] > cross_best_em_exec:
-                cross_best_em_exec = cross_eval_result["EM"] + cross_eval_result["EXEC"]
-                cross_best_em_exec_idx = idx
-
-    # We only keep the checkpoint with best EM+EXEC ckpt and best cross-lingual EM+EXEC ckpt. Delete the others.
-
-    if opt.cross_eval_every_epoch:
-        for idx, eval_result in enumerate(eval_results):
-            if (idx != best_em_plus_exec_idx) and (idx != cross_best_em_exec_idx):
-                shutil.rmtree(eval_result["ckpt"], ignore_errors = True)
-    else:
-        for idx, eval_result in enumerate(eval_results):
-            if idx != best_em_plus_exec_idx:
-                shutil.rmtree(eval_result["ckpt"], ignore_errors = True)
+    for idx, eval_result in enumerate(eval_results):
+        if idx != best_em_plus_exec_idx:
+            shutil.rmtree(eval_result["ckpt"], ignore_errors = True)
 
 
     best_ckpt_name = ckpt_names[best_em_plus_exec_idx]
     print(f"Deleted all ckpts except the best EM+EXEC ckpt : {best_ckpt_name}.")
-
-    print(f"Now testing on cross-lingual dev sets using the best EM+EXEC ckpt : {best_ckpt_name}.")
-
-    """
-    Testing on cross-lingual dev sets using the best EM+EXEC ckpt
-    """
-    print("Start testing ckpt on cross-lingual dev set: {}".format(best_ckpt_name))
-    with open(opt.eval_results_path+"/{}_cross.txt".format(best_ckpt_name), "w") as f:
-        f.write("Evaluating on cross-lingual dev set...")
     
     opt.save_path = save_path + "/{}".format(best_ckpt_name)
-    # Override the dev_filepath and original_dev_filepath
-    opt.dev_filepath = opt.cross_dev_filepath
-    opt.original_dev_filepath = opt.cross_original_dev_filepath
-    opt.db_path = opt.cross_db_path
-    em, exec = _test(opt)
-
-
-    eval_result = dict()
-    eval_result["ckpt"] = opt.save_path
-    eval_result["EM"] = em
-    eval_result["EXEC"] = exec
-
-    print(f"Best ckpt cross-lingual evaluation result on {opt.cross_eval_dataset_name}: {eval_result}")
-    with open(opt.eval_results_path+f"/{best_ckpt_name}_{opt.cross_eval_dataset_name}.txt", "w") as f:
-        f.write(json.dumps(eval_result, indent = 2, ensure_ascii = False))
     
     # Rename best checkpoint to "best_model"
     shutil.move(opt.save_path, save_path + "/best_model")
     print(f"Renamed best ckpt to {save_path}/best_model.")
-
-    if opt.cross_eval_every_epoch:
-        cross_best_ckpt_name = ckpt_names[cross_best_em_exec_idx]
-        opt.save_path = save_path + "/{}".format(cross_best_ckpt_name)
-        # Rename cross-lingual best checkpoint to "best_model_cross"
-        shutil.move(opt.save_path, save_path + "/best_model_cross")
-        print(f"Renamed best cross-eval ckpt to {save_path}/best_model_cross.")
 
     print("Done.")
